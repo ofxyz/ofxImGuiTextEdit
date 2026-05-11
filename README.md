@@ -4,7 +4,7 @@ openFrameworks addon wrapping [ImGuiColorTextEdit](https://github.com/santaclose
 
 Uses the actively maintained [santaclose fork](https://github.com/santaclose/ImGuiColorTextEdit) which supports the latest ImGui versions.
 
-[!example-preview](example-textEdit/example-textEdit.png)
+![example-preview](example-textEdit/preview.png)
 
 ## Dependencies
 
