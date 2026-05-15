@@ -155,22 +155,22 @@ void TextEditor::SelectRegion(int aStartLine, int aStartChar, int aEndLine, int 
 	SetSelection(aStartLine, aStartChar, aEndLine, aEndChar);
 }
 
-void TextEditor::SelectNextOccurrenceOf(const char* aText, int aTextSize, bool aCaseSensitive)
+void TextEditor::SelectNextOccurrenceOf(const char* aText, int aTextSize, bool aCaseSensitive, bool aWholeWord)
 {
 	ClearSelections();
 	ClearExtraCursors();
-	SelectNextOccurrenceOf(aText, aTextSize, -1, aCaseSensitive);
+	SelectNextOccurrenceOf(aText, aTextSize, -1, aCaseSensitive, aWholeWord);
 }
 
-void TextEditor::SelectAllOccurrencesOf(const char* aText, int aTextSize, bool aCaseSensitive)
+void TextEditor::SelectAllOccurrencesOf(const char* aText, int aTextSize, bool aCaseSensitive, bool aWholeWord)
 {
 	ClearSelections();
 	ClearExtraCursors();
-	SelectNextOccurrenceOf(aText, aTextSize, -1, aCaseSensitive);
+	SelectNextOccurrenceOf(aText, aTextSize, -1, aCaseSensitive, aWholeWord);
 	Coordinates startPos = mState.mCursors[mState.GetLastAddedCursorIndex()].mInteractiveEnd;
 	while (true)
 	{
-		AddCursorForNextOccurrence(aCaseSensitive);
+		AddCursorForNextOccurrence(aCaseSensitive, aWholeWord);
 		Coordinates lastAddedPos = mState.mCursors[mState.GetLastAddedCursorIndex()].mInteractiveEnd;
 		if (lastAddedPos == startPos)
 			break;
@@ -1160,17 +1160,17 @@ void TextEditor::SetSelection(int aStartLine, int aStartChar, int aEndLine, int 
 	SetSelection(startCoords, endCoords, aCursor);
 }
 
-void TextEditor::SelectNextOccurrenceOf(const char* aText, int aTextSize, int aCursor, bool aCaseSensitive)
+void TextEditor::SelectNextOccurrenceOf(const char* aText, int aTextSize, int aCursor, bool aCaseSensitive, bool aWholeWord)
 {
 	if (aCursor == -1)
 		aCursor = mState.mCurrentCursor;
 	Coordinates nextStart, nextEnd;
-	FindNextOccurrence(aText, aTextSize, mState.mCursors[aCursor].mInteractiveEnd, nextStart, nextEnd, aCaseSensitive);
+	FindNextOccurrence(aText, aTextSize, mState.mCursors[aCursor].mInteractiveEnd, nextStart, nextEnd, aCaseSensitive, aWholeWord);
 	SetSelection(nextStart, nextEnd, aCursor);
 	EnsureCursorVisible(aCursor, true);
 }
 
-void TextEditor::AddCursorForNextOccurrence(bool aCaseSensitive)
+void TextEditor::AddCursorForNextOccurrence(bool aCaseSensitive, bool aWholeWord)
 {
 	const Cursor& currentCursor = mState.mCursors[mState.GetLastAddedCursorIndex()];
 	if (currentCursor.GetSelectionStart() == currentCursor.GetSelectionEnd())
@@ -1178,7 +1178,7 @@ void TextEditor::AddCursorForNextOccurrence(bool aCaseSensitive)
 
 	std::string selectionText = GetText(currentCursor.GetSelectionStart(), currentCursor.GetSelectionEnd());
 	Coordinates nextStart, nextEnd;
-	if (!FindNextOccurrence(selectionText.c_str(), selectionText.length(), currentCursor.GetSelectionEnd(), nextStart, nextEnd, aCaseSensitive))
+	if (!FindNextOccurrence(selectionText.c_str(), selectionText.length(), currentCursor.GetSelectionEnd(), nextStart, nextEnd, aCaseSensitive, aWholeWord))
 		return;
 
 	mState.AddCursor();
@@ -1188,7 +1188,7 @@ void TextEditor::AddCursorForNextOccurrence(bool aCaseSensitive)
 	EnsureCursorVisible(-1, true);
 }
 
-bool TextEditor::FindNextOccurrence(const char* aText, int aTextSize, const Coordinates& aFrom, Coordinates& outStart, Coordinates& outEnd, bool aCaseSensitive)
+bool TextEditor::FindNextOccurrence(const char* aText, int aTextSize, const Coordinates& aFrom, Coordinates& outStart, Coordinates& outEnd, bool aCaseSensitive, bool aWholeWord)
 {
 	assert(aTextSize > 0);
 	bool fmatches = false;
@@ -1229,13 +1229,29 @@ bool TextEditor::FindNextOccurrence(const char* aText, int aTextSize, const Coor
 						currentCharIndex++;
 				}
 			}
-			matches = i == aTextSize;
-			if (matches)
+		matches = i == aTextSize;
+		if (matches)
+		{
+			if (aWholeWord)
 			{
-				outStart = { fline, GetCharacterColumn(fline, findex) };
-				outEnd = { fline + lineOffset, GetCharacterColumn(fline + lineOffset, currentCharIndex) };
-				return true;
+				auto isWordChar = [](char c) {
+					return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+					       (c >= '0' && c <= '9') || c == '_';
+				};
+				bool boundBefore = (findex == 0) ||
+				                   !isWordChar(mLines[fline][findex - 1].mChar);
+				bool boundAfter  = (currentCharIndex >= (int)mLines[fline + lineOffset].size()) ||
+				                   !isWordChar(mLines[fline + lineOffset][currentCharIndex].mChar);
+				if (!boundBefore || !boundAfter)
+					matches = false;
 			}
+		}
+		if (matches)
+		{
+			outStart = { fline, GetCharacterColumn(fline, findex) };
+			outEnd = { fline + lineOffset, GetCharacterColumn(fline + lineOffset, currentCharIndex) };
+			return true;
+		}
 		}
 
 		// move forward
