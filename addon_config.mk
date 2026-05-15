@@ -7,3 +7,4 @@ meta:
 
 common:
 	ADDON_DEPENDENCIES = ofxImGui
+	ADDON_INCLUDES = src libs/ImGuiColorTextEdit/src

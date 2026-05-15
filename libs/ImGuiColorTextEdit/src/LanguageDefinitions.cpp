@@ -935,3 +935,69 @@ const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::Json()
 	}
 	return langDef;
 }
+
+const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::Gcode()
+{
+	static bool inited = false;
+	static LanguageDefinition langDef;
+	if (!inited)
+	{
+		// Modal G-codes
+		static const char* const keywords[] = {
+			"G0", "G00", "G1", "G01", "G2", "G02", "G3", "G03",
+			"G4", "G04", "G17", "G18", "G19",
+			"G20", "G21", "G28", "G30",
+			"G40", "G41", "G42",
+			"G43", "G44", "G49",
+			"G54", "G55", "G56", "G57", "G58", "G59",
+			"G80", "G81", "G82", "G83", "G84", "G85", "G86", "G87", "G88", "G89",
+			"G90", "G91", "G92",
+			"G93", "G94", "G95",
+			"G98", "G99",
+			// M-codes
+			"M0", "M00", "M1", "M01", "M2", "M02",
+			"M3", "M03", "M4", "M04", "M5", "M05",
+			"M6", "M06", "M7", "M07", "M8", "M08", "M9", "M09",
+			"M30", "M48", "M49",
+		};
+		for (auto& k : keywords)
+			langDef.mKeywords.insert(k);
+
+		// Axis and parameter words as identifiers with tooltips
+		static const struct { const char* word; const char* desc; } identifiers[] = {
+			{ "X", "X-axis coordinate" }, { "Y", "Y-axis coordinate" }, { "Z", "Z-axis coordinate" },
+			{ "A", "A-axis coordinate" }, { "B", "B-axis coordinate" }, { "C", "C-axis coordinate" },
+			{ "I", "Arc center X offset" }, { "J", "Arc center Y offset" }, { "K", "Arc center Z offset" },
+			{ "R", "Arc radius / retract height" },
+			{ "F", "Feed rate" }, { "S", "Spindle speed" }, { "T", "Tool number" },
+			{ "P", "Dwell time / parameter" }, { "Q", "Peck depth / parameter" },
+			{ "N", "Line number" }, { "O", "Program number" },
+			{ "L", "Repeat count" }, { "H", "Tool length offset index" }, { "D", "Tool radius offset index" },
+		};
+		for (auto& id : identifiers)
+		{
+			Identifier ident;
+			ident.mDeclaration = id.desc;
+			langDef.mIdentifiers.insert(std::make_pair(std::string(id.word), ident));
+		}
+
+		// Tokenize: numbers (including negative and decimal), then identifiers (G/M/axis words)
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##([+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?)##", PaletteIndex::Number));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##([A-Za-z][0-9]*)##", PaletteIndex::Identifier));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##([\[\]\{\}\!\%\^\&\*\(\)\-\+\=\~\|\<\>\?\/\;\,\.])##", PaletteIndex::Punctuation));
+
+		// G-code: ; starts a line comment, ( ... ) is a block comment
+		langDef.mCommentStart   = "(";
+		langDef.mCommentEnd     = ")";
+		langDef.mSingleLineComment = ";";
+
+		langDef.mCaseSensitive  = false;
+		langDef.mName           = "G-code";
+
+		inited = true;
+	}
+	return langDef;
+}
