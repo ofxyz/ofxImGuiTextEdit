@@ -43,25 +43,27 @@ void TextEditor::SetPalette(PaletteId aValue)
 
 void TextEditor::ApplyPalette()
 {
-	const Palette* palletteBase;
+	const Palette* paletteBase = &GetDarkPalette();
 	switch (mPaletteId)
 	{
 	case PaletteId::Dark:
-		palletteBase = &(GetDarkPalette());
+		paletteBase = &GetDarkPalette();
 		break;
 	case PaletteId::Light:
-		palletteBase = &(GetLightPalette());
+		paletteBase = &GetLightPalette();
 		break;
 	case PaletteId::Mariana:
-		palletteBase = &(GetMarianaPalette());
+		paletteBase = &GetMarianaPalette();
 		break;
 	case PaletteId::RetroBlue:
-		palletteBase = &(GetRetroBluePalette());
+		paletteBase = &GetRetroBluePalette();
+		break;
+	default:
 		break;
 	}
 	for (int i = 0; i < (int)PaletteIndex::Max; ++i)
 	{
-		ImVec4 color = U32ColorToVec4((*palletteBase)[i]);
+		ImVec4 color = U32ColorToVec4((*paletteBase)[i]);
 		color.w *= ImGui::GetStyle().Alpha;
 		mPalette[i] = ImGui::ColorConvertFloat4ToU32(color);
 	}
