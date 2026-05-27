@@ -1,9 +1,20 @@
 #include <algorithm>
+#include <climits>
 #include <string>
 #include <set>
 #include <regex>
 
 #include "TextEditor.h"
+
+#if defined(__has_include)
+# if __has_include("ofxUnicode.h")
+#  include "ofxUnicode.h"
+#  define TEXTEDITOR_HAS_OFX_UNICODE 1
+# endif
+#endif
+#ifndef TEXTEDITOR_HAS_OFX_UNICODE
+# define TEXTEDITOR_HAS_OFX_UNICODE 0
+#endif
 
 #define IMGUI_SCROLLBAR_WIDTH 14.0f
 #define POS_TO_COORDS_COLUMN_OFFSET 0.33f
@@ -96,6 +107,9 @@ void TextEditor::SetLanguageDefinition(LanguageDefinitionId aValue)
 	case LanguageDefinitionId::Json:
 		mLanguageDefinition = &(LanguageDefinition::Json());
 		break;
+	case LanguageDefinitionId::Xml:
+		mLanguageDefinition = &(LanguageDefinition::Xml());
+		break;
 	case LanguageDefinitionId::Sql:
 		mLanguageDefinition = &(LanguageDefinition::Sql());
 		break;
@@ -110,6 +124,9 @@ void TextEditor::SetLanguageDefinition(LanguageDefinitionId aValue)
 		break;
 	case LanguageDefinitionId::Gcode:
 		mLanguageDefinition = &(LanguageDefinition::Gcode());
+		break;
+	case LanguageDefinitionId::Markdown:
+		mLanguageDefinition = &(LanguageDefinition::Markdown());
 		break;
 	}
 
@@ -444,7 +461,11 @@ bool TextEditor::Render(const char* aTitle, bool aParentIsFocused, const ImVec2&
 	ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(mPalette[(int)PaletteIndex::Background]));
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
 
-	ImGui::BeginChild(aTitle, aSize, aBorder, ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoNavInputs);
+	ImGuiWindowFlags childFlags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoNavInputs;
+	if (!mSoftWrapEnabled)
+		childFlags |= ImGuiWindowFlags_HorizontalScrollbar;
+
+	ImGui::BeginChild(aTitle, aSize, aBorder, childFlags);
 
 	bool isFocused = ImGui::IsWindowFocused();
 	HandleKeyboardInputs(aParentIsFocused);
@@ -1671,6 +1692,17 @@ TextEditor::Coordinates TextEditor::ScreenPosToCoordinates(const ImVec2& aPositi
 	if (isOverLineNumber != nullptr)
 		*isOverLineNumber = local.x < mTextStart;
 
+	if (mSoftWrapEnabled && !mVisualLines.empty())
+	{
+		int visualRow = Max(0, (int)floor(local.y / mCharAdvance.y));
+		visualRow = Min(visualRow, (int)mVisualLines.size() - 1);
+		const VisualLine& vl = mVisualLines[visualRow];
+		int relCol = Max(0, (int)floor((local.x - mTextStart + POS_TO_COORDS_COLUMN_OFFSET * mCharAdvance.x) / mCharAdvance.x));
+		int column = vl.startColumn + relCol;
+		column = Min(column, GetLineMaxColumn(vl.logicalLine));
+		return SanitizeCoordinates({ vl.logicalLine, column });
+	}
+
 	Coordinates out = {
 		Max(0, (int)floor(local.y / mCharAdvance.y)),
 		Max(0, (int)floor((local.x - mTextStart) / mCharAdvance.x))
@@ -2241,10 +2273,188 @@ void TextEditor::HandleMouseInputs()
 	}
 }
 
+void TextEditor::BuildVisualLines() const
+{
+	mVisualLines.clear();
+
+	const float maxWidth = mContentWidth - mTextStart;
+	const int lineCount = (int)mLines.size();
+
+	if (!mSoftWrapEnabled || maxWidth <= 1.0f)
+	{
+		for (int line = 0; line < lineCount; ++line)
+			mVisualLines.push_back({ line, 0, GetLineMaxColumn(line) });
+		return;
+	}
+
+	for (int line = 0; line < lineCount; ++line)
+	{
+		const int lineMax = GetLineMaxColumn(line);
+		if (lineMax == 0)
+		{
+			mVisualLines.push_back({ line, 0, 0 });
+			continue;
+		}
+
+		int startCol = 0;
+		while (startCol < lineMax)
+		{
+			int endCol = FindWrapEndColumn(line, startCol, maxWidth);
+			if (endCol <= startCol)
+				endCol = Min(startCol + 1, lineMax);
+			mVisualLines.push_back({ line, startCol, endCol });
+			startCol = endCol;
+		}
+	}
+}
+
+int TextEditor::FindWrapEndColumn(int aLine, int aStartColumn, float aMaxWidth) const
+{
+	const int lineMax = GetLineMaxColumn(aLine);
+	if (aStartColumn >= lineMax)
+		return lineMax;
+
+	const float baseX = TextDistanceToLineStart({ aLine, aStartColumn }, false);
+
+#if TEXTEDITOR_HAS_OFX_UNICODE
+	std::vector<ofxLinebreaker::BreakType> breaks;
+	std::vector<int> colAtCp;
+	try
+	{
+		std::string utf8;
+		int col = 0;
+		int i = 0;
+		while (i < (int)mLines[aLine].size())
+		{
+			colAtCp.push_back(col);
+			const char lead = mLines[aLine][i].mChar;
+			const int seqLen = UTF8CharLength(lead);
+			for (int k = 0; k < seqLen && i < (int)mLines[aLine].size(); ++k, ++i)
+				utf8 += mLines[aLine][i].mChar;
+			MoveCharIndexAndColumn(aLine, i, col);
+		}
+		if (!utf8.empty())
+		{
+			const auto text32 = ofxUTF8::toUTF32(utf8);
+			breaks = ofxLinebreaker::findBreaks(text32, mWrapLanguage);
+		}
+	}
+	catch (...)
+	{
+		breaks.clear();
+		colAtCp.clear();
+	}
+#else
+	(void)mWrapLanguage;
+#endif
+
+	auto columnAfterBreak = [](int breakCol, int line, const TextEditor* self) {
+		int ci = self->GetCharacterIndexL({ line, breakCol });
+		if (ci >= 0 && ci < (int)self->mLines[line].size() &&
+			(self->mLines[line][ci].mChar == ' ' || self->mLines[line][ci].mChar == '\t'))
+		{
+			int nextCi = ci;
+			int nextCol = breakCol;
+			self->MoveCharIndexAndColumn(line, nextCi, nextCol);
+			return Max(nextCol, breakCol + 1);
+		}
+		return breakCol;
+	};
+
+	int lastBreakCol = aStartColumn;
+	int col = aStartColumn;
+
+	while (col < lineMax)
+	{
+		const float w = TextDistanceToLineStart({ aLine, col }, false) - baseX;
+		if (w > aMaxWidth && col > aStartColumn)
+			return lastBreakCol > aStartColumn ? columnAfterBreak(lastBreakCol, aLine, this) : col;
+
+#if TEXTEDITOR_HAS_OFX_UNICODE
+		if (!colAtCp.empty())
+		{
+			int cpIndex = 0;
+			while (cpIndex + 1 < (int)colAtCp.size() && colAtCp[cpIndex + 1] <= col)
+				++cpIndex;
+
+			if (cpIndex < (int)breaks.size())
+			{
+				const auto br = breaks[cpIndex];
+				if (br == ofxLinebreaker::BreakType::MUST_BREAK && col > aStartColumn)
+					return columnAfterBreak(col, aLine, this);
+				if (br == ofxLinebreaker::BreakType::ALLOW_BREAK)
+					lastBreakCol = col;
+			}
+		}
+		else
+#endif
+		{
+			const int ci = GetCharacterIndexL({ aLine, col });
+			if (ci >= 0 && ci < (int)mLines[aLine].size())
+			{
+				const char ch = mLines[aLine][ci].mChar;
+				if (ch == ' ' || ch == '\t' || ch == '-' || ch == '/')
+					lastBreakCol = col;
+			}
+		}
+
+		const int ci = GetCharacterIndexL({ aLine, col });
+		if (ci < 0 || ci >= (int)mLines[aLine].size())
+		{
+			++col;
+			continue;
+		}
+
+		int nextCi = ci;
+		int nextCol = col;
+		MoveCharIndexAndColumn(aLine, nextCi, nextCol);
+		col = (nextCol <= col) ? col + 1 : nextCol;
+	}
+
+	return lineMax;
+}
+
+int TextEditor::FindVisualRowForCoordinate(const Coordinates& aCoords) const
+{
+	if (!mSoftWrapEnabled || mVisualLines.empty())
+		return aCoords.mLine;
+
+	int bestRow = 0;
+	for (int row = 0; row < (int)mVisualLines.size(); ++row)
+	{
+		const VisualLine& vl = mVisualLines[row];
+		if (vl.logicalLine < aCoords.mLine)
+		{
+			bestRow = row;
+			continue;
+		}
+		if (vl.logicalLine > aCoords.mLine)
+			break;
+
+		if (aCoords.mColumn >= vl.startColumn)
+			bestRow = row;
+		if (aCoords.mColumn >= vl.startColumn && aCoords.mColumn <= vl.endColumn)
+			return row;
+	}
+	return bestRow;
+}
+
 void TextEditor::UpdateViewVariables(float aScrollX, float aScrollY)
 {
 	mContentHeight = ImGui::GetWindowHeight() - (IsHorizontalScrollbarVisible() ? IMGUI_SCROLLBAR_WIDTH : 0.0f);
 	mContentWidth = ImGui::GetWindowWidth() - (IsVerticalScrollbarVisible() ? IMGUI_SCROLLBAR_WIDTH : 0.0f);
+
+	if (mSoftWrapEnabled)
+	{
+		BuildVisualLines();
+		mVisibleLineCount = Max((int)ceil(mContentHeight / mCharAdvance.y), 0);
+		mFirstVisibleLine = Max((int)(aScrollY / mCharAdvance.y), 0);
+		mLastVisibleLine = Max((int)((mContentHeight + aScrollY) / mCharAdvance.y), 0);
+		mFirstVisibleColumn = 0;
+		mLastVisibleColumn = INT_MAX;
+		mVisibleColumnCount = INT_MAX;
+		return;
+	}
 
 	mVisibleLineCount = Max((int)ceil(mContentHeight / mCharAdvance.y), 0);
 	mFirstVisibleLine = Max((int)(aScrollY / mCharAdvance.y), 0);
@@ -2276,22 +2486,38 @@ void TextEditor::Render(bool aParentIsFocused)
 	mScrollY = ImGui::GetScrollY();
 	UpdateViewVariables(mScrollX, mScrollY);
 
+	UpdateViewVariables(mScrollX, mScrollY);
+	if (mSoftWrapEnabled)
+	{
+		ImGui::SetScrollX(0.0f);
+		mScrollX = 0.0f;
+	}
+
+	const bool useWrap = mSoftWrapEnabled && !mVisualLines.empty();
+	const int rowCount = useWrap ? (int)mVisualLines.size() : (int)mLines.size();
+	const int rowEnd = Min(mLastVisibleLine, rowCount - 1);
+
 	int maxColumnLimited = 0;
 	if (!mLines.empty())
 	{
 		auto drawList = ImGui::GetWindowDrawList();
 		float spaceSize = ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, -1.0f, " ", nullptr, nullptr).x;
 
-		for (int lineNo = mFirstVisibleLine; lineNo <= mLastVisibleLine && lineNo < mLines.size(); lineNo++)
+		for (int row = mFirstVisibleLine; row <= rowEnd && row >= 0; ++row)
 		{
-			ImVec2 lineStartScreenPos = ImVec2(cursorScreenPos.x, cursorScreenPos.y + lineNo * mCharAdvance.y);
+			const int lineNo = useWrap ? mVisualLines[row].logicalLine : row;
+			const int segStartCol = useWrap ? mVisualLines[row].startColumn : 0;
+			const int segEndCol = useWrap ? mVisualLines[row].endColumn : GetLineMaxColumn(lineNo);
+			const float segOffsetX = TextDistanceToLineStart({ lineNo, segStartCol }, false);
+
+			ImVec2 lineStartScreenPos = ImVec2(cursorScreenPos.x, cursorScreenPos.y + row * mCharAdvance.y);
 			ImVec2 textScreenPos = ImVec2(lineStartScreenPos.x + mTextStart, lineStartScreenPos.y);
 
 			auto& line = mLines[lineNo];
-			maxColumnLimited = Max(GetLineMaxColumn(lineNo, mLastVisibleColumn), maxColumnLimited);
+			maxColumnLimited = Max(segEndCol, maxColumnLimited);
 
-			Coordinates lineStartCoord(lineNo, 0);
-			Coordinates lineEndCoord(lineNo, maxColumnLimited);
+			Coordinates lineStartCoord(lineNo, segStartCol);
+			Coordinates lineEndCoord(lineNo, segEndCol);
 
 			// Draw selection for the current line
 			for (int c = 0; c <= mState.mCurrentCursor; c++)
@@ -2303,10 +2529,14 @@ void TextEditor::Render(bool aParentIsFocused)
 				assert(cursorSelectionStart <= cursorSelectionEnd);
 
 				if (cursorSelectionStart <= lineEndCoord)
-					rectStart = cursorSelectionStart > lineStartCoord ? TextDistanceToLineStart(cursorSelectionStart) : 0.0f;
+					rectStart = cursorSelectionStart > lineStartCoord
+						? TextDistanceToLineStart(cursorSelectionStart) - segOffsetX
+						: 0.0f;
 				if (cursorSelectionEnd > lineStartCoord)
-					rectEnd = TextDistanceToLineStart(cursorSelectionEnd < lineEndCoord ? cursorSelectionEnd : lineEndCoord);
-				if (cursorSelectionEnd.mLine > lineNo || cursorSelectionEnd.mLine == lineNo && cursorSelectionEnd > lineEndCoord)
+					rectEnd = TextDistanceToLineStart(
+						cursorSelectionEnd < lineEndCoord ? cursorSelectionEnd : lineEndCoord) - segOffsetX;
+				if (cursorSelectionEnd.mLine > lineNo ||
+					(cursorSelectionEnd.mLine == lineNo && cursorSelectionEnd > lineEndCoord))
 					rectEnd += mCharAdvance.x;
 
 				if (rectStart != -1 && rectEnd != -1 && rectStart < rectEnd)
@@ -2316,8 +2546,8 @@ void TextEditor::Render(bool aParentIsFocused)
 						mPalette[(int)PaletteIndex::Selection]);
 			}
 
-			// Draw line number (right aligned)
-			if (mShowLineNumbers)
+			// Draw line number (right aligned) on the first visual segment only
+			if (mShowLineNumbers && segStartCol == 0)
 			{
 				snprintf(lineNumberBuffer, 16, "%d  ", lineNo + 1);
 				float lineNoWidth = ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, -1.0f, lineNumberBuffer, nullptr, nullptr).x;
@@ -2327,8 +2557,9 @@ void TextEditor::Render(bool aParentIsFocused)
 			std::vector<Coordinates> cursorCoordsInThisLine;
 			for (int c = 0; c <= mState.mCurrentCursor; c++)
 			{
-				if (mState.mCursors[c].mInteractiveEnd.mLine == lineNo)
-					cursorCoordsInThisLine.push_back(mState.mCursors[c].mInteractiveEnd);
+				const auto& end = mState.mCursors[c].mInteractiveEnd;
+				if (end.mLine == lineNo && end.mColumn >= segStartCol && end.mColumn <= segEndCol)
+					cursorCoordsInThisLine.push_back(end);
 			}
 			if (cursorCoordsInThisLine.size() > 0)
 			{
@@ -2340,8 +2571,7 @@ void TextEditor::Render(bool aParentIsFocused)
 					for (const auto& cursorCoords : cursorCoordsInThisLine)
 					{
 						float width = 1.0f;
-						auto cindex = GetCharacterIndexR(cursorCoords);
-						float cx = TextDistanceToLineStart(cursorCoords);
+						float cx = TextDistanceToLineStart(cursorCoords) - segOffsetX;
 
 						ImVec2 cstart(textScreenPos.x + cx, lineStartScreenPos.y);
 						ImVec2 cend(textScreenPos.x + cx + width, lineStartScreenPos.y + mCharAdvance.y);
@@ -2358,9 +2588,9 @@ void TextEditor::Render(bool aParentIsFocused)
 
 			// Render colorized text
 			static std::string glyphBuffer;
-			int charIndex = GetFirstVisibleCharacterIndex(lineNo);
-			int column = mFirstVisibleColumn; // can be in the middle of tab character
-			while (charIndex < mLines[lineNo].size() && column <= mLastVisibleColumn)
+			int charIndex = GetCharacterIndexL({ lineNo, segStartCol });
+			int column = segStartCol;
+			while (charIndex < (int)line.size() && column < segEndCol)
 			{
 				auto& glyph = line[charIndex];
 				auto color = GetGlyphColor(glyph);
@@ -2427,8 +2657,12 @@ void TextEditor::Render(bool aParentIsFocused)
 			}
 		}
 	}
-	mCurrentSpaceHeight = (mLines.size() + Min(mVisibleLineCount - 1, (int)mLines.size())) * mCharAdvance.y;
-	mCurrentSpaceWidth = Max((maxColumnLimited + Min(mVisibleColumnCount - 1, maxColumnLimited)) * mCharAdvance.x, mCurrentSpaceWidth);
+	mCurrentSpaceHeight = useWrap
+		? (float)rowCount * mCharAdvance.y
+		: (mLines.size() + Min(mVisibleLineCount - 1, (int)mLines.size())) * mCharAdvance.y;
+	mCurrentSpaceWidth = mSoftWrapEnabled
+		? mContentWidth
+		: Max((maxColumnLimited + Min(mVisibleColumnCount - 1, maxColumnLimited)) * mCharAdvance.x, mCurrentSpaceWidth);
 
 	ImGui::SetCursorPos(ImVec2(0, 0));
 	ImGui::Dummy(ImVec2(mCurrentSpaceWidth, mCurrentSpaceHeight));
@@ -2439,25 +2673,26 @@ void TextEditor::Render(bool aParentIsFocused)
 		{
 			if (i) UpdateViewVariables(mScrollX, mScrollY); // second pass depends on changes made in first pass
 			Coordinates targetCoords = GetSanitizedCursorCoordinates(mEnsureCursorVisible, i); // cursor selection end or start
-			if (targetCoords.mLine <= mFirstVisibleLine)
+			const int targetVisualRow = FindVisualRowForCoordinate(targetCoords);
+			if (targetVisualRow <= mFirstVisibleLine)
 			{
-				float targetScroll = std::max(0.0f, (targetCoords.mLine - 0.5f) * mCharAdvance.y);
+				float targetScroll = std::max(0.0f, (targetVisualRow - 0.5f) * mCharAdvance.y);
 				if (targetScroll < mScrollY)
 					ImGui::SetScrollY(targetScroll);
 			}
-			if (targetCoords.mLine >= mLastVisibleLine)
+			if (targetVisualRow >= mLastVisibleLine)
 			{
-				float targetScroll = std::max(0.0f, (targetCoords.mLine + 1.5f) * mCharAdvance.y - mContentHeight);
+				float targetScroll = std::max(0.0f, (targetVisualRow + 1.5f) * mCharAdvance.y - mContentHeight);
 				if (targetScroll > mScrollY)
 					ImGui::SetScrollY(targetScroll);
 			}
-			if (targetCoords.mColumn <= mFirstVisibleColumn)
+			if (!mSoftWrapEnabled && targetCoords.mColumn <= mFirstVisibleColumn)
 			{
 				float targetScroll = std::max(0.0f, mTextStart + (targetCoords.mColumn - 0.5f) * mCharAdvance.x);
 				if (targetScroll < mScrollX)
 					ImGui::SetScrollX(mScrollX = targetScroll);
 			}
-			if (targetCoords.mColumn >= mLastVisibleColumn)
+			if (!mSoftWrapEnabled && targetCoords.mColumn >= mLastVisibleColumn)
 			{
 				float targetScroll = std::max(0.0f, mTextStart + (targetCoords.mColumn + 0.5f) * mCharAdvance.x - mContentWidth);
 				if (targetScroll > mScrollX)

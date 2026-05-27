@@ -936,6 +936,52 @@ const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::Json()
 	return langDef;
 }
 
+const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::Xml()
+{
+	static bool inited = false;
+	static LanguageDefinition langDef;
+	if (!inited)
+	{
+		langDef.mKeywords.clear();
+		langDef.mIdentifiers.clear();
+
+		static const char* const keywords[] = {
+			"xml", "version", "encoding", "standalone",
+			"true", "false", "yes", "no",
+			"svg", "g", "path", "rect", "circle", "ellipse", "line", "polyline", "polygon",
+			"defs", "use", "symbol", "clipPath", "mask", "pattern", "image", "text", "tspan",
+			"linearGradient", "radialGradient", "stop", "style", "viewBox",
+			"xmlns", "xlink", "href",
+		};
+		for (auto& k : keywords)
+			langDef.mKeywords.insert(k);
+
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(<!--[\s\S]*?-->)##", PaletteIndex::MultiLineComment));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(<\?[\s\S]*?\?>)##", PaletteIndex::Preprocessor));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(\"(\\.|[^\"])*\")##", PaletteIndex::String));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##('(\\.|[^'])*')##", PaletteIndex::String));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##([+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?)##", PaletteIndex::Number));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(</?[A-Za-z][\w:.-]*)##", PaletteIndex::Keyword));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##([\[\]\{\}\!\%\^\&\*\(\)\-\+\=\~\|\<\>\?\/\;\,\.\:])##", PaletteIndex::Punctuation));
+
+		langDef.mCommentStart        = "<!--";
+		langDef.mCommentEnd          = "-->";
+		langDef.mSingleLineComment   = "";
+		langDef.mCaseSensitive       = false;
+		langDef.mName                = "XML";
+
+		inited = true;
+	}
+	return langDef;
+}
+
 const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::Gcode()
 {
 	static bool inited = false;
@@ -996,6 +1042,67 @@ const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::Gcode()
 
 		langDef.mCaseSensitive  = false;
 		langDef.mName           = "G-code";
+
+		inited = true;
+	}
+	return langDef;
+}
+
+const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::Markdown()
+{
+	static bool inited = false;
+	static LanguageDefinition langDef;
+	if (!inited)
+	{
+		langDef.mKeywords.clear();
+		langDef.mIdentifiers.clear();
+		langDef.mTokenRegexStrings.clear();
+
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(<!--[\s\S]*?-->)##", PaletteIndex::MultiLineComment));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(^>\s)##", PaletteIndex::Comment));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(^#{1,6}\s)##", PaletteIndex::Keyword));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(^[=-]{3,}\s*$)##", PaletteIndex::Keyword));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(!\[[^\]]*\]\([^)\n]+\))##", PaletteIndex::KnownIdentifier));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(\[[^\]]+\]\([^)\n]+\))##", PaletteIndex::KnownIdentifier));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(\[[^\]]+\]\[[^\]]+\])##", PaletteIndex::KnownIdentifier));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(\[[^\]]+\])##", PaletteIndex::KnownIdentifier));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(`[^`\n]+`)##", PaletteIndex::String));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(\*\*[^*\n]+\*\*)##", PaletteIndex::Keyword));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(__[^_\n]+__)##", PaletteIndex::Keyword));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(\*[^*\n]+\*)##", PaletteIndex::Identifier));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(_[^_\n]+_)##", PaletteIndex::Identifier));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(~~[^~\n]+~~)##", PaletteIndex::Punctuation));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(<https?://[^>\s]+>)##", PaletteIndex::String));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(https?://[\w\-./?#=&%+,;:@~]+)##", PaletteIndex::String));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(</?[A-Za-z][\w:.-]*[^>\n]*>)##", PaletteIndex::Preprocessor));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(^[\*\-+]\s)##", PaletteIndex::Punctuation));
+		langDef.mTokenRegexStrings.push_back(std::make_pair<std::string, PaletteIndex>(
+			R"##(^\d+\.\s)##", PaletteIndex::Punctuation));
+
+		langDef.mCommentStart = "```";
+		langDef.mCommentEnd = "```";
+		langDef.mSingleLineComment = "";
+		langDef.mPreprocChar = '\0';
+		langDef.mCaseSensitive = false;
+		langDef.mName = "Markdown";
 
 		inited = true;
 	}

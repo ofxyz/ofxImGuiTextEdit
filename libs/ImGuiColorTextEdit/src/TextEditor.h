@@ -26,7 +26,7 @@ public:
 	};
 	enum class LanguageDefinitionId
 	{
-		None, Cpp, C, Cs, Python, Lua, Json, Sql, AngelScript, Glsl, Hlsl, Gcode
+		None, Cpp, C, Cs, Python, Lua, Json, Xml, Sql, AngelScript, Glsl, Hlsl, Gcode, Markdown
 	};
 	enum class SetViewAtLineMode
 	{
@@ -43,6 +43,10 @@ public:
 	inline bool IsShowLineNumbersEnabled() const { return mShowLineNumbers; }
 	inline void SetShortTabsEnabled(bool aValue) { mShortTabs = aValue; }
 	inline bool IsShortTabsEnabled() const { return mShortTabs; }
+	inline void SetSoftWrapEnabled(bool aValue) { mSoftWrapEnabled = aValue; }
+	inline bool IsSoftWrapEnabled() const { return mSoftWrapEnabled; }
+	inline void SetWrapLanguage(const std::string& aLanguage) { mWrapLanguage = aLanguage; }
+	inline const std::string& GetWrapLanguage() const { return mWrapLanguage; }
 	inline int GetLineCount() const { return mLines.size(); }
 	void SetPalette(PaletteId aValue);
 	PaletteId GetPalette() const { return mPaletteId; }
@@ -291,7 +295,9 @@ private:
 		static const LanguageDefinition& Lua();
 		static const LanguageDefinition& Cs();
 		static const LanguageDefinition& Json();
+		static const LanguageDefinition& Xml();
 		static const LanguageDefinition& Gcode();
+		static const LanguageDefinition& Markdown();
 	};
 
 	enum class UndoOperationType { Add, Delete };
@@ -391,7 +397,17 @@ private:
 	void HandleKeyboardInputs(bool aParentIsFocused = false);
 	void HandleMouseInputs();
 	void UpdateViewVariables(float aScrollX, float aScrollY);
+	void BuildVisualLines() const;
+	int FindWrapEndColumn(int aLine, int aStartColumn, float aMaxWidth) const;
+	int FindVisualRowForCoordinate(const Coordinates& aCoords) const;
 	void Render(bool aParentIsFocused = false);
+
+	struct VisualLine
+	{
+		int logicalLine = 0;
+		int startColumn = 0;
+		int endColumn   = 0;
+	};
 
 	void OnCursorPositionChanged();
 	void OnLineChanged(bool aBeforeChange, int aLine, int aColumn, int aCharCount, bool aDeleted);
@@ -415,6 +431,9 @@ private:
 	bool mShowWhitespaces = true;
 	bool mShowLineNumbers = true;
 	bool mShortTabs = false;
+	bool mSoftWrapEnabled = false;
+	std::string mWrapLanguage = "en";
+	mutable std::vector<VisualLine> mVisualLines;
 
 	int mSetViewAtLine = -1;
 	SetViewAtLineMode mSetViewAtLineMode;
