@@ -461,9 +461,9 @@ bool TextEditor::Render(const char* aTitle, bool aParentIsFocused, const ImVec2&
 	ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(mPalette[(int)PaletteIndex::Background]));
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
 
-	ImGuiWindowFlags childFlags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoNavInputs;
-	if (!mSoftWrapEnabled)
-		childFlags |= ImGuiWindowFlags_HorizontalScrollbar;
+    ImGuiWindowFlags childFlags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoNavInputs;
+    if (!mSoftWrapEnabled && !mReadOnly)
+        childFlags |= ImGuiWindowFlags_HorizontalScrollbar;
 
 	ImGui::BeginChild(aTitle, aSize, aBorder, childFlags);
 
@@ -2277,7 +2277,9 @@ void TextEditor::BuildVisualLines() const
 {
 	mVisualLines.clear();
 
-	const float maxWidth = mContentWidth - mTextStart;
+	float contentWidth = ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x;
+
+	const float maxWidth = contentWidth - mTextStart;
 	const int lineCount = (int)mLines.size();
 
 	if (!mSoftWrapEnabled || maxWidth <= 1.0f)
@@ -2301,7 +2303,7 @@ void TextEditor::BuildVisualLines() const
 		{
 			int endCol = FindWrapEndColumn(line, startCol, maxWidth);
 			if (endCol <= startCol)
-				endCol = Min(startCol + 1, lineMax);
+				break;
 			mVisualLines.push_back({ line, startCol, endCol });
 			startCol = endCol;
 		}
@@ -2314,51 +2316,52 @@ int TextEditor::FindWrapEndColumn(int aLine, int aStartColumn, float aMaxWidth) 
 	if (aStartColumn >= lineMax)
 		return lineMax;
 
-	const float baseX = TextDistanceToLineStart({ aLine, aStartColumn }, false);
+	auto advanceColumn = [&](int column) {
+		const int ci = GetCharacterIndexL({ aLine, column });
+		if (ci < 0 || ci >= (int)mLines[aLine].size())
+			return column + 1;
 
-#if TEXTEDITOR_HAS_OFX_UNICODE
-	std::vector<ofxLinebreaker::BreakType> breaks;
-	std::vector<int> colAtCp;
-	try
-	{
-		std::string utf8;
-		int col = 0;
-		int i = 0;
-		while (i < (int)mLines[aLine].size())
-		{
-			colAtCp.push_back(col);
-			const char lead = mLines[aLine][i].mChar;
-			const int seqLen = UTF8CharLength(lead);
-			for (int k = 0; k < seqLen && i < (int)mLines[aLine].size(); ++k, ++i)
-				utf8 += mLines[aLine][i].mChar;
-			MoveCharIndexAndColumn(aLine, i, col);
-		}
-		if (!utf8.empty())
-		{
-			const auto text32 = ofxUTF8::toUTF32(utf8);
-			breaks = ofxLinebreaker::findBreaks(text32, mWrapLanguage);
-		}
-	}
-	catch (...)
-	{
-		breaks.clear();
-		colAtCp.clear();
-	}
-#else
-	(void)mWrapLanguage;
-#endif
+		int nextCi = ci;
+		int nextCol = column;
+		MoveCharIndexAndColumn(aLine, nextCi, nextCol);
+		return (nextCol <= column) ? column + 1 : nextCol;
+	};
 
-	auto columnAfterBreak = [](int breakCol, int line, const TextEditor* self) {
-		int ci = self->GetCharacterIndexL({ line, breakCol });
-		if (ci >= 0 && ci < (int)self->mLines[line].size() &&
-			(self->mLines[line][ci].mChar == ' ' || self->mLines[line][ci].mChar == '\t'))
+	auto textWidth = [&](int fromCol, int toCol) -> float {
+		if (toCol <= fromCol)
+			return 0.0f;
+
+		std::string text;
+		int col = fromCol;
+		while (col < toCol)
 		{
-			int nextCi = ci;
-			int nextCol = breakCol;
-			self->MoveCharIndexAndColumn(line, nextCi, nextCol);
-			return Max(nextCol, breakCol + 1);
+			const int ci = GetCharacterIndexL({ aLine, col });
+			if (ci < 0 || ci >= (int)mLines[aLine].size())
+				break;
+			text += mLines[aLine][ci].mChar;
+			col = advanceColumn(col);
 		}
-		return breakCol;
+		if (text.empty())
+			return 0.0f;
+
+		ImFont* font = ImGui::GetFont();
+		const float fontSize = ImGui::GetFontSize();
+		return font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, text.c_str(), text.c_str() + text.size()).x;
+	};
+
+	auto findWordEndAtSpace = [&](int fromCol) {
+		int c = fromCol;
+		while (c < lineMax)
+		{
+			const int ci = GetCharacterIndexL({ aLine, c });
+			if (ci < 0 || ci >= (int)mLines[aLine].size())
+				break;
+			const char ch = mLines[aLine][ci].mChar;
+			if (ch == ' ' || ch == '\t')
+				return c;
+			c = advanceColumn(c);
+		}
+		return lineMax;
 	};
 
 	int lastBreakCol = aStartColumn;
@@ -2366,49 +2369,26 @@ int TextEditor::FindWrapEndColumn(int aLine, int aStartColumn, float aMaxWidth) 
 
 	while (col < lineMax)
 	{
-		const float w = TextDistanceToLineStart({ aLine, col }, false) - baseX;
-		if (w > aMaxWidth && col > aStartColumn)
-			return lastBreakCol > aStartColumn ? columnAfterBreak(lastBreakCol, aLine, this) : col;
-
-#if TEXTEDITOR_HAS_OFX_UNICODE
-		if (!colAtCp.empty())
+		const int nextCol = advanceColumn(col);
+		const float w = textWidth(aStartColumn, nextCol);
+		if (w > aMaxWidth && nextCol > aStartColumn)
 		{
-			int cpIndex = 0;
-			while (cpIndex + 1 < (int)colAtCp.size() && colAtCp[cpIndex + 1] <= col)
-				++cpIndex;
+			if (lastBreakCol > aStartColumn)
+				return lastBreakCol;
 
-			if (cpIndex < (int)breaks.size())
-			{
-				const auto br = breaks[cpIndex];
-				if (br == ofxLinebreaker::BreakType::MUST_BREAK && col > aStartColumn)
-					return columnAfterBreak(col, aLine, this);
-				if (br == ofxLinebreaker::BreakType::ALLOW_BREAK)
-					lastBreakCol = col;
-			}
-		}
-		else
-#endif
-		{
-			const int ci = GetCharacterIndexL({ aLine, col });
-			if (ci >= 0 && ci < (int)mLines[aLine].size())
-			{
-				const char ch = mLines[aLine][ci].mChar;
-				if (ch == ' ' || ch == '\t' || ch == '-' || ch == '/')
-					lastBreakCol = col;
-			}
+			const int wordEnd = findWordEndAtSpace(aStartColumn);
+			return wordEnd > aStartColumn ? wordEnd : nextCol;
 		}
 
 		const int ci = GetCharacterIndexL({ aLine, col });
-		if (ci < 0 || ci >= (int)mLines[aLine].size())
+		if (ci >= 0 && ci < (int)mLines[aLine].size())
 		{
-			++col;
-			continue;
+			const char ch = mLines[aLine][ci].mChar;
+			if (ch == ' ' || ch == '\t' || ch == '-' || ch == '/')
+				lastBreakCol = nextCol;
 		}
 
-		int nextCi = ci;
-		int nextCol = col;
-		MoveCharIndexAndColumn(aLine, nextCi, nextCol);
-		col = (nextCol <= col) ? col + 1 : nextCol;
+		col = nextCol;
 	}
 
 	return lineMax;
@@ -2442,7 +2422,7 @@ int TextEditor::FindVisualRowForCoordinate(const Coordinates& aCoords) const
 void TextEditor::UpdateViewVariables(float aScrollX, float aScrollY)
 {
 	mContentHeight = ImGui::GetWindowHeight() - (IsHorizontalScrollbarVisible() ? IMGUI_SCROLLBAR_WIDTH : 0.0f);
-	mContentWidth = ImGui::GetWindowWidth() - (IsVerticalScrollbarVisible() ? IMGUI_SCROLLBAR_WIDTH : 0.0f);
+	mContentWidth = ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x;
 
 	if (mSoftWrapEnabled)
 	{
@@ -2468,7 +2448,7 @@ void TextEditor::UpdateViewVariables(float aScrollX, float aScrollY)
 void TextEditor::Render(bool aParentIsFocused)
 {
 	/* Compute mCharAdvance regarding to scaled font size (Ctrl + mouse wheel)*/
-	const float fontWidth = ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, -1.0f, "#", nullptr, nullptr).x;
+	const float fontWidth = ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, -1.0f, "M", nullptr, nullptr).x;
 	const float fontHeight = ImGui::GetTextLineHeightWithSpacing();
 	mCharAdvance = ImVec2(fontWidth, fontHeight * mLineSpacing);
 
@@ -2594,7 +2574,9 @@ void TextEditor::Render(bool aParentIsFocused)
 			{
 				auto& glyph = line[charIndex];
 				auto color = GetGlyphColor(glyph);
-				ImVec2 targetGlyphPos = { lineStartScreenPos.x + mTextStart + TextDistanceToLineStart({lineNo, column}, false), lineStartScreenPos.y };
+				ImVec2 targetGlyphPos = {
+					lineStartScreenPos.x + mTextStart + TextDistanceToLineStart({ lineNo, column }, false) - segOffsetX,
+					lineStartScreenPos.y };
 
 				if (glyph.mChar == '\t')
 				{
@@ -2659,7 +2641,9 @@ void TextEditor::Render(bool aParentIsFocused)
 	}
 	mCurrentSpaceHeight = useWrap
 		? (float)rowCount * mCharAdvance.y
-		: (mLines.size() + Min(mVisibleLineCount - 1, (int)mLines.size())) * mCharAdvance.y;
+		: mReadOnly
+			? (float)mLines.size() * mCharAdvance.y
+			: (mLines.size() + Min(mVisibleLineCount - 1, (int)mLines.size())) * mCharAdvance.y;
 	mCurrentSpaceWidth = mSoftWrapEnabled
 		? mContentWidth
 		: Max((maxColumnLimited + Min(mVisibleColumnCount - 1, maxColumnLimited)) * mCharAdvance.x, mCurrentSpaceWidth);
