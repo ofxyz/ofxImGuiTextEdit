@@ -57,6 +57,8 @@ public:
 	inline int GetTabSize() const { return mTabSize; }
 	void SetLineSpacing(float aValue);
 	inline float GetLineSpacing() const { return mLineSpacing;  }
+	void SetFont(ImFont* aValue) { mFont = aValue; }
+	inline ImFont* GetFont() const { return mFont; }
 
 	inline static void SetDefaultPalette(PaletteId aValue) { defaultPalette = aValue; }
 	inline static PaletteId GetDefaultPalette() { return defaultPalette; }
@@ -428,7 +430,7 @@ private:
 	float mLineSpacing = 1.0f;
 	bool mReadOnly = false;
 	bool mAutoIndent = true;
-	bool mShowWhitespaces = true;
+	bool mShowWhitespaces = false;
 	bool mShowLineNumbers = true;
 	bool mShortTabs = false;
 	bool mSoftWrapEnabled = false;
@@ -458,6 +460,7 @@ private:
 	float mContentHeight = 0.0f;
 	float mScrollX = 0.0f;
 	float mScrollY = 0.0f;
+	ImFont* mFont = nullptr;
 	bool mPanning = false;
 	bool mDraggingSelection = false;
 	ImVec2 mLastMousePos;

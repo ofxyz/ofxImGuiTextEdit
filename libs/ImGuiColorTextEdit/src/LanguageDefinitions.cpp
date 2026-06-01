@@ -988,6 +988,52 @@ const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::Gcode()
 	static LanguageDefinition langDef;
 	if (!inited)
 	{
+		langDef.mTokenize = [](const char* in_begin, const char* in_end, const char*& out_begin, const char*& out_end, PaletteIndex& paletteIndex) -> bool
+		{
+			paletteIndex = PaletteIndex::Max;
+
+			while (in_begin < in_end && isascii(*in_begin) && isblank(*in_begin))
+				in_begin++;
+
+			if (in_begin == in_end)
+			{
+				out_begin = in_end;
+				out_end = in_end;
+				paletteIndex = PaletteIndex::Default;
+				return true;
+			}
+
+			if (*in_begin == ';')
+			{
+				out_begin = in_begin;
+				out_end = in_end;
+				paletteIndex = PaletteIndex::Comment;
+				return true;
+			}
+
+			if (*in_begin == '(')
+			{
+				const char* p = in_begin + 1;
+				while (p < in_end && *p != ')')
+					++p;
+				if (p < in_end)
+					++p;
+				out_begin = in_begin;
+				out_end = p;
+				paletteIndex = PaletteIndex::Comment;
+				return true;
+			}
+
+			if (TokenizeCStyleNumber(in_begin, in_end, out_begin, out_end))
+				paletteIndex = PaletteIndex::Number;
+			else if (TokenizeCStyleIdentifier(in_begin, in_end, out_begin, out_end))
+				paletteIndex = PaletteIndex::Identifier;
+			else if (TokenizeCStylePunctuation(in_begin, in_end, out_begin, out_end))
+				paletteIndex = PaletteIndex::Punctuation;
+
+			return paletteIndex != PaletteIndex::Max;
+		};
+
 		// Modal G-codes
 		static const char* const keywords[] = {
 			"G0", "G00", "G1", "G01", "G2", "G02", "G3", "G03",

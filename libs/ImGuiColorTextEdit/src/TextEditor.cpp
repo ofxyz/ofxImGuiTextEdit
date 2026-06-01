@@ -461,6 +461,9 @@ bool TextEditor::Render(const char* aTitle, bool aParentIsFocused, const ImVec2&
 	ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(mPalette[(int)PaletteIndex::Background]));
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
 
+	if (mFont)
+		ImGui::PushFont(mFont);
+
     ImGuiWindowFlags childFlags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoNavInputs;
     if (!mSoftWrapEnabled && !mReadOnly)
         childFlags |= ImGuiWindowFlags_HorizontalScrollbar;
@@ -474,6 +477,9 @@ bool TextEditor::Render(const char* aTitle, bool aParentIsFocused, const ImVec2&
 	Render(aParentIsFocused);
 
 	ImGui::EndChild();
+
+	if (mFont)
+		ImGui::PopFont();
 
 	ImGui::PopStyleVar();
 	ImGui::PopStyleColor();
@@ -2448,8 +2454,11 @@ void TextEditor::UpdateViewVariables(float aScrollX, float aScrollY)
 void TextEditor::Render(bool aParentIsFocused)
 {
 	/* Compute mCharAdvance regarding to scaled font size (Ctrl + mouse wheel)*/
-	const float fontWidth = ImGui::GetFont()->CalcTextSizeA(ImGui::GetFontSize(), FLT_MAX, -1.0f, "M", nullptr, nullptr).x;
-	const float fontHeight = ImGui::GetTextLineHeightWithSpacing();
+	const float fontSize = ImGui::GetFontSize();
+	const float fontWidth = ImGui::GetFont()->CalcTextSizeA(fontSize, FLT_MAX, -1.0f, "M", nullptr, nullptr).x;
+	// Use bare font size for row stride — GetTextLineHeightWithSpacing() adds ImGui
+	// item padding on top of our own line layout and makes comment blocks feel airy.
+	const float fontHeight = fontSize;
 	mCharAdvance = ImVec2(fontWidth, fontHeight * mLineSpacing);
 
 	// Deduce mTextStart by evaluating mLines size (global lineMax) plus two spaces as text width
@@ -2566,21 +2575,22 @@ void TextEditor::Render(bool aParentIsFocused)
 				}
 			}
 
-			// Render colorized text
+			// Render colorized text — batch same-color runs so ImGui lays out glyph
+			// spacing naturally instead of one fixed-width cell per character.
 			static std::string glyphBuffer;
 			int charIndex = GetCharacterIndexL({ lineNo, segStartCol });
 			int column = segStartCol;
 			while (charIndex < (int)line.size() && column < segEndCol)
 			{
 				auto& glyph = line[charIndex];
-				auto color = GetGlyphColor(glyph);
-				ImVec2 targetGlyphPos = {
-					lineStartScreenPos.x + mTextStart + TextDistanceToLineStart({ lineNo, column }, false) - segOffsetX,
-					lineStartScreenPos.y };
+				const bool inComment = glyph.mComment || glyph.mMultiLineComment;
 
 				if (glyph.mChar == '\t')
 				{
-					if (mShowWhitespaces)
+					ImVec2 targetGlyphPos = {
+						lineStartScreenPos.x + mTextStart + TextDistanceToLineStart({ lineNo, column }, false) - segOffsetX,
+						lineStartScreenPos.y };
+					if (mShowWhitespaces && !inComment)
 					{
 						ImVec2 p1, p2, p3, p4;
 
@@ -2609,33 +2619,63 @@ void TextEditor::Render(bool aParentIsFocused)
 						drawList->AddLine(p2, p3, mPalette[(int)PaletteIndex::ControlCharacter]);
 						drawList->AddLine(p2, p4, mPalette[(int)PaletteIndex::ControlCharacter]);
 					}
+					MoveCharIndexAndColumn(lineNo, charIndex, column);
 				}
 				else if (glyph.mChar == ' ')
 				{
-					if (mShowWhitespaces)
+					if (mShowWhitespaces && !inComment)
 					{
+						ImVec2 targetGlyphPos = {
+							lineStartScreenPos.x + mTextStart + TextDistanceToLineStart({ lineNo, column }, false) - segOffsetX,
+							lineStartScreenPos.y };
 						const auto s = ImGui::GetFontSize();
 						const auto x = targetGlyphPos.x + spaceSize * 0.5f;
 						const auto y = targetGlyphPos.y + s * 0.5f;
 						drawList->AddCircleFilled(ImVec2(x, y), 1.5f, mPalette[(int)PaletteIndex::ControlCharacter], 4);
 					}
+					MoveCharIndexAndColumn(lineNo, charIndex, column);
 				}
 				else
 				{
-					int seqLength = UTF8CharLength(glyph.mChar);
-					if (mCursorOnBracket && seqLength == 1 && mMatchingBracketCoords == Coordinates{ lineNo, column })
-					{
-						ImVec2 topLeft = { targetGlyphPos.x, targetGlyphPos.y + fontHeight + 1.0f };
-						ImVec2 bottomRight = { topLeft.x + mCharAdvance.x, topLeft.y + 1.0f };
-						drawList->AddRectFilled(topLeft, bottomRight, mPalette[(int)PaletteIndex::Cursor]);
-					}
+					const int runStartCol = column;
+					const ImU32 runColor = GetGlyphColor(glyph);
 					glyphBuffer.clear();
-					for (int i = 0; i < seqLength; i++)
-						glyphBuffer.push_back(line[charIndex + i].mChar);
-					drawList->AddText(targetGlyphPos, color, glyphBuffer.c_str());
-				}
 
-				MoveCharIndexAndColumn(lineNo, charIndex, column);
+					while (charIndex < (int)line.size() && column < segEndCol)
+					{
+						auto& g = line[charIndex];
+						if (g.mChar == ' ' || g.mChar == '\t')
+							break;
+						if (GetGlyphColor(g) != runColor)
+							break;
+
+						const int seqLength = UTF8CharLength(g.mChar);
+						for (int i = 0; i < seqLength; ++i)
+						{
+							if (mCursorOnBracket && seqLength == 1
+								&& mMatchingBracketCoords == Coordinates{ lineNo, column })
+							{
+								ImVec2 topLeft = {
+									lineStartScreenPos.x + mTextStart
+										+ TextDistanceToLineStart({ lineNo, column }, false) - segOffsetX,
+									lineStartScreenPos.y + fontHeight + 1.0f };
+								ImVec2 bottomRight = { topLeft.x + mCharAdvance.x, topLeft.y + 1.0f };
+								drawList->AddRectFilled(topLeft, bottomRight, mPalette[(int)PaletteIndex::Cursor]);
+							}
+							glyphBuffer.push_back(line[charIndex + i].mChar);
+						}
+						MoveCharIndexAndColumn(lineNo, charIndex, column);
+					}
+
+					if (!glyphBuffer.empty())
+					{
+						ImVec2 runPos = {
+							lineStartScreenPos.x + mTextStart
+								+ TextDistanceToLineStart({ lineNo, runStartCol }, false) - segOffsetX,
+							lineStartScreenPos.y };
+						drawList->AddText(runPos, runColor, glyphBuffer.c_str());
+					}
+				}
 			}
 		}
 	}
