@@ -1,5 +1,7 @@
 #include "TextEditor.h"
 
+#include <cctype>
+
 static bool TokenizeCStyleString(const char* in_begin, const char* in_end, const char*& out_begin, const char*& out_end)
 {
 	const char* p = in_begin;
@@ -1022,6 +1024,61 @@ const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::Gcode()
 				out_end = p;
 				paletteIndex = PaletteIndex::Comment;
 				return true;
+			}
+
+			// G-code word: G0, X52.003, F3000 — single token so decimals stay intact
+			{
+				const unsigned char c0 = (unsigned char)*in_begin;
+				if (std::isalpha(c0))
+				{
+					const char* p = in_begin + 1;
+
+					if (c0 == 'G' || c0 == 'g' || c0 == 'M' || c0 == 'm') {
+						while (p < in_end && std::isdigit((unsigned char)*p))
+							++p;
+						out_begin = in_begin;
+						out_end = p;
+						paletteIndex = PaletteIndex::Identifier;
+						return true;
+					}
+
+					const char* q = p;
+					if (q < in_end && (*q == '+' || *q == '-'))
+						++q;
+
+					bool hasNum = false;
+					if (q < in_end && std::isdigit((unsigned char)*q)) {
+						hasNum = true;
+						while (q < in_end && std::isdigit((unsigned char)*q))
+							++q;
+						if (q < in_end && *q == '.') {
+							++q;
+							while (q < in_end && std::isdigit((unsigned char)*q))
+								++q;
+						}
+					} else if (q < in_end && *q == '.') {
+						++q;
+						if (q < in_end && std::isdigit((unsigned char)*q)) {
+							hasNum = true;
+							while (q < in_end && std::isdigit((unsigned char)*q))
+								++q;
+						}
+					}
+
+					if (hasNum) {
+						out_begin = in_begin;
+						out_end = q;
+						paletteIndex = PaletteIndex::Number;
+						return true;
+					}
+
+					if (p > in_begin + 1) {
+						out_begin = in_begin;
+						out_end = p;
+						paletteIndex = PaletteIndex::Identifier;
+						return true;
+					}
+				}
 			}
 
 			if (TokenizeCStyleNumber(in_begin, in_end, out_begin, out_end))
