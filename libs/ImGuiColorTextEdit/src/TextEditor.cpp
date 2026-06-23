@@ -2991,7 +2991,7 @@ void TextEditor::ColorizeInternal()
 		auto withinPreproc = false;
 		auto firstChar = true;			// there is no other non-whitespace characters in the line before
 		auto concatenate = false;		// '\' on the very end of the line
-		auto currentLine = 0;
+		size_t currentLine = 0;
 		auto currentIndex = 0;
 		while (currentLine < endLine || currentIndex < endIndex)
 		{
