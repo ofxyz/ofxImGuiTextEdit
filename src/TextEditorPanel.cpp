@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <system_error>
 
 namespace fs = std::filesystem;
 
@@ -41,6 +42,7 @@ void TextEditorPanel::setText(const std::string& text,
     if (lang != TextEditor::LanguageDefinitionId::None)
         m_editor.SetLanguageDefinition(lang);
     m_editor.SetText(text);
+    m_statusMessage.clear();
 }
 
 std::string TextEditorPanel::getText() const
@@ -94,6 +96,205 @@ void TextEditorPanel::setHighlightLine(int line)
     m_editor.SetViewAtLine(line, TextEditor::SetViewAtLineMode::Centered);
 }
 
+void TextEditorPanel::detectLanguage(const std::string& path)
+{
+    std::string ext = fs::path(path).extension().string();
+    if (!ext.empty() && ext.front() == '.')
+        ext.erase(0, 1);
+    for (char& c : ext)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+    if (ext == "glsl" || ext == "vert" || ext == "frag")
+        m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Glsl);
+    else if (ext == "hlsl")
+        m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Hlsl);
+    else if (ext == "cpp" || ext == "c" || ext == "h" || ext == "hpp")
+        m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Cpp);
+    else if (ext == "cs")
+        m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Cs);
+    else if (ext == "lua")
+        m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Lua);
+    else if (ext == "py")
+        m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Python);
+    else if (ext == "json")
+        m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Json);
+    else if (ext == "xml" || ext == "svg")
+        m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Xml);
+    else if (ext == "sql")
+        m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Sql);
+    else if (ext == "gcode" || ext == "nc" || ext == "cnc" || ext == "tap")
+        m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Gcode);
+    else if (ext == "md" || ext == "markdown")
+        m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Markdown);
+    else
+        m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::None);
+}
+
+bool TextEditorPanel::readFileText(const std::string& path,
+                                   std::string& outText,
+                                   std::string& err) const
+{
+    std::error_code ec;
+    const auto size = fs::file_size(path, ec);
+    if (ec) {
+        err = "Could not read file size: " + path;
+        return false;
+    }
+    if (size > kMaxLoadBytes) {
+        err = "File too large for the text editor (" +
+              std::to_string(size / (1024 * 1024)) + " MB; max " +
+              std::to_string(kMaxLoadBytes / (1024 * 1024)) + " MB): " +
+              fs::path(path).filename().string();
+        return false;
+    }
+
+    std::ifstream ifs(path, std::ios::binary);
+    if (!ifs) {
+        err = "Could not open: " + path;
+        return false;
+    }
+
+    outText.assign(std::istreambuf_iterator<char>(ifs),
+                   std::istreambuf_iterator<char>());
+
+    const std::size_t probe = std::min<std::size_t>(outText.size(), 8192);
+    if (std::memchr(outText.data(), '\0', probe) != nullptr) {
+        err = "Refusing binary file: " + fs::path(path).filename().string();
+        outText.clear();
+        return false;
+    }
+    return true;
+}
+
+void TextEditorPanel::stashActiveBuffer()
+{
+    if (m_activeOpenFile < 0 || m_activeOpenFile >= (int)m_openFiles.size())
+        return;
+    auto& buf = m_openFiles[m_activeOpenFile];
+    buf.text = m_editor.GetText();
+    buf.path = m_filePath;
+    buf.lang = m_editor.GetLanguageDefinition();
+}
+
+void TextEditorPanel::activateOpenFile(int index)
+{
+    if (index < 0 || index >= (int)m_openFiles.size())
+        return;
+    stashActiveBuffer();
+    m_activeOpenFile = index;
+    const auto& buf = m_openFiles[index];
+    m_filePath = buf.path;
+    m_editor.SetText(buf.text);
+    m_editor.SetLanguageDefinition(buf.lang);
+    m_statusMessage.clear();
+}
+
+void TextEditorPanel::openPath(const std::string& path)
+{
+    std::string text, err;
+    if (!readFileText(path, text, err)) {
+        m_statusMessage = err;
+        return;
+    }
+
+    if (m_openFilesSidebar) {
+        for (int i = 0; i < (int)m_openFiles.size(); ++i) {
+            if (m_openFiles[i].path == path) {
+                activateOpenFile(i);
+                m_openFiles[i].text = text;
+                m_editor.SetText(text);
+                detectLanguage(path);
+                m_openFiles[i].lang = m_editor.GetLanguageDefinition();
+                return;
+            }
+        }
+        stashActiveBuffer();
+        OpenBuffer buf;
+        buf.path = path;
+        buf.text = text;
+        m_openFiles.push_back(std::move(buf));
+        m_activeOpenFile = (int)m_openFiles.size() - 1;
+    }
+
+    m_filePath = path;
+    m_editor.SetText(text);
+    detectLanguage(path);
+    if (m_openFilesSidebar && m_activeOpenFile >= 0 &&
+        m_activeOpenFile < (int)m_openFiles.size()) {
+        m_openFiles[m_activeOpenFile].lang = m_editor.GetLanguageDefinition();
+    }
+    m_statusMessage.clear();
+}
+
+void TextEditorPanel::closeOpenFile(int index)
+{
+    if (index < 0 || index >= (int)m_openFiles.size())
+        return;
+    if (index == m_activeOpenFile)
+        stashActiveBuffer();
+
+    m_openFiles.erase(m_openFiles.begin() + index);
+
+    if (m_openFiles.empty()) {
+        m_activeOpenFile = -1;
+        m_filePath.clear();
+        m_editor.SetText("");
+        m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::None);
+        return;
+    }
+
+    if (m_activeOpenFile == index) {
+        m_activeOpenFile = std::min(index, (int)m_openFiles.size() - 1);
+        const auto& buf = m_openFiles[m_activeOpenFile];
+        m_filePath = buf.path;
+        m_editor.SetText(buf.text);
+        m_editor.SetLanguageDefinition(buf.lang);
+    } else if (m_activeOpenFile > index) {
+        --m_activeOpenFile;
+    }
+}
+
+void TextEditorPanel::newDocument()
+{
+    if (m_openFilesSidebar) {
+        stashActiveBuffer();
+        OpenBuffer buf;
+        buf.path.clear();
+        buf.text.clear();
+        buf.lang = TextEditor::LanguageDefinitionId::None;
+        m_openFiles.push_back(std::move(buf));
+        m_activeOpenFile = (int)m_openFiles.size() - 1;
+    }
+    m_editor.SetText("");
+    m_filePath.clear();
+    m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::None);
+    m_statusMessage.clear();
+}
+
+void TextEditorPanel::renameActivePath(const std::string& path)
+{
+    m_filePath = path;
+    detectLanguage(path);
+    if (m_openFilesSidebar && m_activeOpenFile >= 0 &&
+        m_activeOpenFile < (int)m_openFiles.size()) {
+        m_openFiles[m_activeOpenFile].path = path;
+        m_openFiles[m_activeOpenFile].lang = m_editor.GetLanguageDefinition();
+        m_openFiles[m_activeOpenFile].text = m_editor.GetText();
+    }
+}
+
+void TextEditorPanel::writeActiveToDisk(const std::string& path)
+{
+    std::ofstream ofs(path);
+    if (!ofs) {
+        m_statusMessage = "Could not save: " + path;
+        return;
+    }
+    ofs << m_editor.GetText();
+    renameActivePath(path);
+    m_statusMessage.clear();
+}
+
 void TextEditorPanel::draw(bool& visible)
 {
     ImGui::SetNextWindowSize(ImVec2(820, 580), ImGuiCond_FirstUseEver);
@@ -103,36 +304,6 @@ void TextEditorPanel::draw(bool& visible)
         ImGui::End();
         return;
     }
-
-    auto detectLanguage = [this](const std::string& path) {
-        std::string ext = fs::path(path).extension().string();
-        if (!ext.empty() && ext.front() == '.')
-            ext.erase(0, 1);
-        if (ext == "glsl" || ext == "vert" || ext == "frag")
-            m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Glsl);
-        else if (ext == "hlsl")
-            m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Hlsl);
-        else if (ext == "cpp" || ext == "c" || ext == "h" || ext == "hpp")
-            m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Cpp);
-        else if (ext == "cs")
-            m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Cs);
-        else if (ext == "lua")
-            m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Lua);
-        else if (ext == "py")
-            m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Python);
-        else if (ext == "json")
-            m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Json);
-        else if (ext == "xml" || ext == "svg")
-            m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Xml);
-        else if (ext == "sql")
-            m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Sql);
-        else if (ext == "gcode" || ext == "nc" || ext == "cnc" || ext == "tap")
-            m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Gcode);
-        else if (ext == "md" || ext == "markdown")
-            m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Markdown);
-        else
-            m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::None);
-    };
 
     // Returns {filter string, default filename} based on the current language.
     auto getDialogParams = [this]() -> std::pair<std::string, std::string> {
@@ -154,14 +325,14 @@ void TextEditorPanel::draw(bool& visible)
         if (lang == TextEditor::LanguageDefinitionId::Json)
             return {"JSON{.json},All Files{.*}", "untitled.json"};
         if (lang == TextEditor::LanguageDefinitionId::Xml)
-            return {"XML{.xml,.svg},All Files{.*}", "untitled.xml"};
+            return {"XML / SVG{.xml,.svg},All Files{.*}", "untitled.xml"};
         if (lang == TextEditor::LanguageDefinitionId::Sql)
             return {"SQL{.sql},All Files{.*}", "untitled.sql"};
         if (lang == TextEditor::LanguageDefinitionId::Markdown)
             return {"Markdown{.md,.markdown},All Files{.*}", "untitled.md"};
         return {"Source{.cpp,.h,.hpp,.c,.glsl,.vert,.frag,.hlsl,.py,.lua},"
                 "G-code{.gcode,.nc,.cnc},"
-                "Data{.json,.xml,.yaml,.txt,.md},"
+                "Data{.json,.xml,.svg,.yaml,.txt,.md},"
                 "All Files{.*}", "untitled.txt"};
     };
 
@@ -172,42 +343,23 @@ void TextEditorPanel::draw(bool& visible)
                    "Source{.cpp,.h,.hpp,.c,.cs,.py,.lua,.js,.ts},"
                    "Shaders{.glsl,.vert,.frag,.hlsl},"
                    "G-code{.gcode,.nc,.cnc,.tap},"
-                   "Data{.json,.xml,.yaml,.txt,.md},"
+                   "Data{.json,.xml,.svg,.yaml,.txt,.md},"
                    "All Files{.*}",
-                   [this, detectLanguage](const std::string& path) {
-                       std::ifstream ifs(path);
-                       if (ifs) {
-                           m_filePath = path;
-                           m_editor.SetText(std::string(
-                               std::istreambuf_iterator<char>(ifs),
-                               std::istreambuf_iterator<char>()));
-                           detectLanguage(path);
-                       }
-                   });
+                   [this](const std::string& path) { openPath(path); });
     };
 
     auto doSave = [&] {
         if (!m_saveFile) {
-            if (!m_filePath.empty()) {
-                std::ofstream ofs(m_filePath);
-                if (ofs)
-                    ofs << m_editor.GetText();
-            }
+            if (!m_filePath.empty())
+                writeActiveToDisk(m_filePath);
             return;
         }
         if (m_filePath.empty()) {
             auto [filter, defaultName] = getDialogParams();
             m_saveFile("code_save", "Save As", filter, defaultName,
-                       [this](const std::string& path) {
-                           m_filePath = path;
-                           std::ofstream ofs(path);
-                           if (ofs)
-                               ofs << m_editor.GetText();
-                       });
+                       [this](const std::string& path) { writeActiveToDisk(path); });
         } else {
-            std::ofstream ofs(m_filePath);
-            if (ofs)
-                ofs << m_editor.GetText();
+            writeActiveToDisk(m_filePath);
         }
     };
 
@@ -219,19 +371,12 @@ void TextEditorPanel::draw(bool& visible)
                                       ? defaultName
                                       : fs::path(m_filePath).filename().string();
         m_saveFile("code_save_as", "Save As", filter, fname,
-                   [this](const std::string& path) {
-                       m_filePath = path;
-                       std::ofstream ofs(path);
-                       if (ofs)
-                           ofs << m_editor.GetText();
-                   });
+                   [this](const std::string& path) { writeActiveToDisk(path); });
     };
 
     if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)) {
-        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_N)) {
-            m_editor.SetText("");
-            m_filePath = "";
-        }
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_N))
+            newDocument();
         if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_O))
             doOpen();
         if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_S)) {
@@ -240,16 +385,18 @@ void TextEditorPanel::draw(bool& visible)
             else
                 doSave();
         }
+        if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_W) &&
+            m_openFilesSidebar && m_activeOpenFile >= 0) {
+            closeOpenFile(m_activeOpenFile);
+        }
         handleFindReplaceShortcuts();
     }
 
     if (ImGui::BeginMenuBar()) {
 
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("New", "Ctrl+N")) {
-                m_editor.SetText("");
-                m_filePath = "";
-            }
+            if (ImGui::MenuItem("New", "Ctrl+N"))
+                newDocument();
             ImGui::Separator();
             if (ImGui::MenuItem("Open...", "Ctrl+O"))
                 doOpen();
@@ -261,6 +408,11 @@ void TextEditorPanel::draw(bool& visible)
             ImGui::EndDisabled();
             if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S"))
                 doSaveAs();
+            if (m_openFilesSidebar && m_activeOpenFile >= 0) {
+                ImGui::Separator();
+                if (ImGui::MenuItem("Close", "Ctrl+W"))
+                    closeOpenFile(m_activeOpenFile);
+            }
             ImGui::EndMenu();
         }
 
@@ -379,9 +531,13 @@ void TextEditorPanel::draw(bool& visible)
     m_findReplace.draw(m_editor);
 
     const float statusH = ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.y;
-    const float sidebarW = m_sidebarEntries.empty() ? 0.f : 180.f;
 
-    if (sidebarW > 0.f) {
+    const bool useHostSidebar = !m_sidebarEntries.empty();
+    const bool useOpenFilesSidebar =
+        !useHostSidebar && m_openFilesSidebar && !m_openFiles.empty();
+    const float sidebarW = (useHostSidebar || useOpenFilesSidebar) ? 180.f : 0.f;
+
+    if (useHostSidebar) {
         ImGui::BeginChild("##code_sidebar", ImVec2(sidebarW, -statusH), ImGuiChildFlags_Borders);
         for (int i = 0; i < (int)m_sidebarEntries.size(); ++i) {
             auto& e = m_sidebarEntries[i];
@@ -390,20 +546,20 @@ void TextEditorPanel::draw(bool& visible)
             if (ImGui::Selectable(e.label.c_str(), active, ImGuiSelectableFlags_AllowOverlap)) {
                 m_sidebarSelected = i;
                 if (!e.path.empty()) {
-                    std::ifstream ifs(e.path);
-                    if (ifs) {
+                    std::string text, err;
+                    if (readFileText(e.path, text, err)) {
                         m_filePath = e.path;
-                        m_editor.SetText(std::string(
-                            std::istreambuf_iterator<char>(ifs),
-                            std::istreambuf_iterator<char>()));
-                        m_editor.SetLanguageDefinition(TextEditor::LanguageDefinitionId::Gcode);
+                        m_editor.SetText(text);
+                        detectLanguage(e.path);
+                        m_statusMessage.clear();
+                    } else {
+                        m_statusMessage = err;
                     }
                 }
             }
             if (!e.path.empty() && ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", e.path.c_str());
 
-            // Right-click context menu
             if (ImGui::BeginPopupContextItem("##sidebar_ctx")) {
                 for (const auto& action : e.actions) {
                     if (action.label.empty() || !action.onClick)
@@ -417,6 +573,33 @@ void TextEditorPanel::draw(bool& visible)
         }
         ImGui::EndChild();
         ImGui::SameLine();
+    } else if (useOpenFilesSidebar) {
+        ImGui::BeginChild("##code_sidebar", ImVec2(sidebarW, -statusH), ImGuiChildFlags_Borders);
+        int closeIdx = -1;
+        for (int i = 0; i < (int)m_openFiles.size(); ++i) {
+            const auto& buf = m_openFiles[i];
+            const std::string label = buf.path.empty()
+                                          ? "untitled"
+                                          : fs::path(buf.path).filename().string();
+            ImGui::PushID(i);
+            if (ImGui::Selectable(label.c_str(), m_activeOpenFile == i,
+                                  ImGuiSelectableFlags_AllowOverlap)) {
+                activateOpenFile(i);
+            }
+            if (!buf.path.empty() && ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", buf.path.c_str());
+
+            if (ImGui::BeginPopupContextItem("##openfile_ctx")) {
+                if (ImGui::MenuItem("Close"))
+                    closeIdx = i;
+                ImGui::EndPopup();
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+        ImGui::SameLine();
+        if (closeIdx >= 0)
+            closeOpenFile(closeIdx);
     }
 
     ImVec2 editorSize = ImGui::GetContentRegionAvail();
@@ -435,9 +618,13 @@ void TextEditorPanel::draw(bool& visible)
     ImGui::Separator();
     int curLine = 0, curCol = 0;
     m_editor.GetCursorPosition(curLine, curCol);
-    ImGui::TextDisabled("Ln %d, Col %d   |   %d lines   |   %s%s", curLine + 1, curCol + 1,
-                        m_editor.GetLineCount(), m_editor.GetLanguageDefinitionName(),
-                        m_editor.IsReadOnlyEnabled() ? "   [Read Only]" : "");
+    if (!m_statusMessage.empty()) {
+        ImGui::TextColored(ImVec4(1.f, 0.45f, 0.4f, 1.f), "%s", m_statusMessage.c_str());
+    } else {
+        ImGui::TextDisabled("Ln %d, Col %d   |   %d lines   |   %s%s", curLine + 1, curCol + 1,
+                            m_editor.GetLineCount(), m_editor.GetLanguageDefinitionName(),
+                            m_editor.IsReadOnlyEnabled() ? "   [Read Only]" : "");
+    }
 
     ImGui::End();
 }

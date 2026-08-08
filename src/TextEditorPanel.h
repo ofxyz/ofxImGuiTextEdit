@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <vector>
@@ -11,6 +12,9 @@
 class TextEditorPanel {
 public:
     using ConfirmPath = std::function<void(const std::string& path)>;
+
+    /// Refuse loads larger than this (TextEditor builds one glyph per character).
+    static constexpr std::size_t kMaxLoadBytes = 2 * 1024 * 1024;
 
     void setup();
 
@@ -35,6 +39,7 @@ public:
     void           setLanguage(TextEditor::LanguageDefinitionId lang);
 
     /// Optional left sidebar entries (e.g. open file + custom actions).
+    /// When non-empty, this overrides the built-in open-files sidebar.
     struct SidebarAction {
         std::string           label;
         std::function<void()> onClick;
@@ -47,6 +52,13 @@ public:
         std::vector<SidebarAction> actions;
     };
     void setSidebarEntries(std::vector<SidebarEntry> entries);
+
+    /// When true (default), File→Open keeps an in-memory open-files list and
+    /// shows it in the left sidebar (unless setSidebarEntries is non-empty).
+    void setOpenFilesSidebarEnabled(bool enabled) { m_openFilesSidebar = enabled; }
+    bool isOpenFilesSidebarEnabled() const { return m_openFilesSidebar; }
+
+    const std::string& filePath() const { return m_filePath; }
 
     /// Highlight a 0-based line (playback / print cursor). -1 clears.
     void setHighlightLine(int line);
@@ -79,9 +91,26 @@ public:
     }
 
 private:
+    struct OpenBuffer {
+        std::string                          path;
+        std::string                          text;
+        TextEditor::LanguageDefinitionId     lang = TextEditor::LanguageDefinitionId::None;
+    };
+
+    void detectLanguage(const std::string& path);
+    bool readFileText(const std::string& path, std::string& outText, std::string& err) const;
+    void stashActiveBuffer();
+    void activateOpenFile(int index);
+    void openPath(const std::string& path);
+    void closeOpenFile(int index);
+    void newDocument();
+    void renameActivePath(const std::string& path);
+    void writeActiveToDisk(const std::string& path);
+
     TextEditor  m_editor;
     ImFont*     m_font = nullptr;
     std::string m_filePath;
+    std::string m_statusMessage;
 
     std::function<void(const std::string& key,
                        const std::string& title,
@@ -97,6 +126,10 @@ private:
 
     std::vector<SidebarEntry> m_sidebarEntries;
     int                       m_sidebarSelected = -1;
+
+    bool                      m_openFilesSidebar = true;
+    std::vector<OpenBuffer>   m_openFiles;
+    int                       m_activeOpenFile = -1;
 
     int  m_highlightLine = -1;
     bool m_syncPlaybackFromCursor = false;

@@ -1026,7 +1026,21 @@ const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::Gcode()
 				return true;
 			}
 
-			// G-code word: G0, X52.003, F3000 — single token so decimals stay intact
+			// Snippet macros: {penUpZ}, {random(0,1)}, {random:id(0,1)}
+			if (*in_begin == '{')
+			{
+				const char* p = in_begin + 1;
+				while (p < in_end && *p != '}' && *p != '\n' && *p != '\r')
+					++p;
+				if (p < in_end && *p == '}') {
+					out_begin = in_begin;
+					out_end = p + 1;
+					paletteIndex = PaletteIndex::Preprocessor;
+					return true;
+				}
+			}
+
+			// G-code word: G0, X52.003, Z{penUpZ}, F3000 — single token so decimals stay intact
 			{
 				const unsigned char c0 = (unsigned char)*in_begin;
 				if (std::isalpha(c0))
@@ -1040,6 +1054,19 @@ const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::Gcode()
 						out_end = p;
 						paletteIndex = PaletteIndex::Identifier;
 						return true;
+					}
+
+					// Axis / param + snippet macro: Z{penUpZ}, X{random(0,10)}
+					if (p < in_end && *p == '{') {
+						const char* q = p + 1;
+						while (q < in_end && *q != '}' && *q != '\n' && *q != '\r')
+							++q;
+						if (q < in_end && *q == '}') {
+							out_begin = in_begin;
+							out_end = q + 1;
+							paletteIndex = PaletteIndex::Number;
+							return true;
+						}
 					}
 
 					const char* q = p;
@@ -1112,7 +1139,7 @@ const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::Gcode()
 		for (auto& k : keywords)
 			langDef.mKeywords.insert(k);
 
-		// Axis and parameter words as identifiers with tooltips
+		// Axis / parameter words + PaintPlotter snippet macros (tooltips)
 		static const struct { const char* word; const char* desc; } identifiers[] = {
 			{ "X", "X-axis coordinate" }, { "Y", "Y-axis coordinate" }, { "Z", "Z-axis coordinate" },
 			{ "A", "A-axis coordinate" }, { "B", "B-axis coordinate" }, { "C", "C-axis coordinate" },
@@ -1122,6 +1149,9 @@ const TextEditor::LanguageDefinition& TextEditor::LanguageDefinition::Gcode()
 			{ "P", "Dwell time / parameter" }, { "Q", "Peck depth / parameter" },
 			{ "N", "Line number" }, { "O", "Program number" },
 			{ "L", "Repeat count" }, { "H", "Tool length offset index" }, { "D", "Tool radius offset index" },
+			{ "penUpZ", "Snippet macro {penUpZ} — current pen-up Z" },
+			{ "penDownZ", "Snippet macro {penDownZ} — current pen-down Z" },
+			{ "random", "Snippet macro {random(min,max)} or {random:id(min,max)}" },
 		};
 		for (auto& id : identifiers)
 		{

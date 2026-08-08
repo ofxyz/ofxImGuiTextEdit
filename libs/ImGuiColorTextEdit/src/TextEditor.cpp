@@ -20,6 +20,7 @@
 #define POS_TO_COORDS_COLUMN_OFFSET 0.33f
 #define IMGUI_DEFINE_MATH_OPERATORS
 #include "imgui.h" // for imGui::GetCurrentWindow()
+#include "imgui_internal.h" // GetTopMostPopupModal
 
 
 struct TextEditor::RegexList {
@@ -2042,103 +2043,113 @@ ImU32 TextEditor::GetGlyphColor(const Glyph& aGlyph) const
 
 void TextEditor::HandleKeyboardInputs(bool aParentIsFocused)
 {
-	if (ImGui::IsWindowFocused() || aParentIsFocused)
+	(void)aParentIsFocused;
+
+	// File dialogs / confirm popups are drawn after docked windows. If we still
+	// treat the editor as focused, we clear io.InputQueueCharacters and the
+	// filename field never receives keystrokes.
+	if (ImGui::GetTopMostPopupModal() != nullptr)
+		return;
+
+	// Only THIS editor child may take keys. Using aParentIsFocused lets every
+	// TextEditor in a panel (preamble / snippet / postamble) type at once.
+	if (!ImGui::IsWindowFocused())
+		return;
+
+	if (ImGui::IsWindowHovered())
+		ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
+	//ImGui::CaptureKeyboardFromApp(true);
+
+	ImGuiIO& io = ImGui::GetIO();
+	auto isOSX = io.ConfigMacOSXBehaviors;
+	auto alt = io.KeyAlt;
+	auto ctrl = io.KeyCtrl;
+	auto shift = io.KeyShift;
+	auto super = io.KeySuper;
+
+	auto isShortcut = (isOSX ? (super && !ctrl) : (ctrl && !super)) && !alt && !shift;
+	auto isShiftShortcut = (isOSX ? (super && !ctrl) : (ctrl && !super)) && shift && !alt;
+	auto isWordmoveKey = isOSX ? alt : ctrl;
+	auto isAltOnly = alt && !ctrl && !shift && !super;
+	auto isCtrlOnly = ctrl && !alt && !shift && !super;
+	auto isShiftOnly = shift && !alt && !ctrl && !super;
+
+	io.WantCaptureKeyboard = true;
+	io.WantTextInput = true;
+
+	if (!mReadOnly && isShortcut && ImGui::IsKeyPressed(ImGuiKey_Z))
+		Undo();
+	else if (!mReadOnly && isAltOnly && ImGui::IsKeyPressed(ImGuiKey_Backspace))
+		Undo();
+	else if (!mReadOnly && isShortcut && ImGui::IsKeyPressed(ImGuiKey_Y))
+		Redo();
+	else if (!mReadOnly && isShiftShortcut && ImGui::IsKeyPressed(ImGuiKey_Z))
+		Redo();
+	else if (!alt && !ctrl && !super && ImGui::IsKeyPressed(ImGuiKey_UpArrow))
+		MoveUp(1, shift);
+	else if (!alt && !ctrl && !super && ImGui::IsKeyPressed(ImGuiKey_DownArrow))
+		MoveDown(1, shift);
+	else if ((isOSX ? !ctrl : !alt) && !super && ImGui::IsKeyPressed(ImGuiKey_LeftArrow))
+		MoveLeft(shift, isWordmoveKey);
+	else if ((isOSX ? !ctrl : !alt) && !super && ImGui::IsKeyPressed(ImGuiKey_RightArrow))
+		MoveRight(shift, isWordmoveKey);
+	else if (!alt && !ctrl && !super && ImGui::IsKeyPressed(ImGuiKey_PageUp))
+		MoveUp(mVisibleLineCount - 2, shift);
+	else if (!alt && !ctrl && !super && ImGui::IsKeyPressed(ImGuiKey_PageDown))
+		MoveDown(mVisibleLineCount - 2, shift);
+	else if (ctrl && !alt && !super && ImGui::IsKeyPressed(ImGuiKey_Home))
+		MoveTop(shift);
+	else if (ctrl && !alt && !super && ImGui::IsKeyPressed(ImGuiKey_End))
+		MoveBottom(shift);
+	else if (!alt && !ctrl && !super && ImGui::IsKeyPressed(ImGuiKey_Home))
+		MoveHome(shift);
+	else if (!alt && !ctrl && !super && ImGui::IsKeyPressed(ImGuiKey_End))
+		MoveEnd(shift);
+	else if (!mReadOnly && !alt && !shift && !super && ImGui::IsKeyPressed(ImGuiKey_Delete))
+		Delete(ctrl);
+	else if (!mReadOnly && !alt && !shift && !super && ImGui::IsKeyPressed(ImGuiKey_Backspace))
+		Backspace(ctrl);
+	else if (!mReadOnly && !alt && ctrl && shift && !super && ImGui::IsKeyPressed(ImGuiKey_K))
+		RemoveCurrentLines();
+	else if (!mReadOnly && !alt && ctrl && !shift && !super && ImGui::IsKeyPressed(ImGuiKey_LeftBracket))
+		ChangeCurrentLinesIndentation(false);
+	else if (!mReadOnly && !alt && ctrl && !shift && !super && ImGui::IsKeyPressed(ImGuiKey_RightBracket))
+		ChangeCurrentLinesIndentation(true);
+	else if (!alt && ctrl && shift && !super && ImGui::IsKeyPressed(ImGuiKey_UpArrow))
+		MoveUpCurrentLines();
+	else if (!alt && ctrl && shift && !super && ImGui::IsKeyPressed(ImGuiKey_DownArrow))
+		MoveDownCurrentLines();
+	else if (!mReadOnly && !alt && ctrl && !shift && !super && ImGui::IsKeyPressed(ImGuiKey_Slash))
+		ToggleLineComment();
+	else if (isCtrlOnly && ImGui::IsKeyPressed(ImGuiKey_Insert))
+		Copy();
+	else if (isShortcut && ImGui::IsKeyPressed(ImGuiKey_C))
+		Copy();
+	else if (!mReadOnly && isShiftOnly && ImGui::IsKeyPressed(ImGuiKey_Insert))
+		Paste();
+	else if (!mReadOnly && isShortcut && ImGui::IsKeyPressed(ImGuiKey_V))
+		Paste();
+	else if (isShortcut && ImGui::IsKeyPressed(ImGuiKey_X))
+		Cut();
+	else if (isShiftOnly && ImGui::IsKeyPressed(ImGuiKey_Delete))
+		Cut();
+	else if (isShortcut && ImGui::IsKeyPressed(ImGuiKey_A))
+		SelectAll();
+	else if (isShortcut && ImGui::IsKeyPressed(ImGuiKey_D))
+		AddCursorForNextOccurrence();
+	else if (!mReadOnly && !alt && !ctrl && !shift && !super && (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)))
+		EnterCharacter('\n', false);
+	else if (!mReadOnly && !alt && !ctrl && !super && ImGui::IsKeyPressed(ImGuiKey_Tab))
+		EnterCharacter('\t', shift);
+	if (!mReadOnly && !io.InputQueueCharacters.empty() && !(ctrl && !alt) && !super) // See https://github.com/santaclose/ImGuiColorTextEdit/pull/34
 	{
-		if (ImGui::IsWindowHovered())
-			ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
-		//ImGui::CaptureKeyboardFromApp(true);
-
-		ImGuiIO& io = ImGui::GetIO();
-		auto isOSX = io.ConfigMacOSXBehaviors;
-		auto alt = io.KeyAlt;
-		auto ctrl = io.KeyCtrl;
-		auto shift = io.KeyShift;
-		auto super = io.KeySuper;
-
-		auto isShortcut = (isOSX ? (super && !ctrl) : (ctrl && !super)) && !alt && !shift;
-		auto isShiftShortcut = (isOSX ? (super && !ctrl) : (ctrl && !super)) && shift && !alt;
-		auto isWordmoveKey = isOSX ? alt : ctrl;
-		auto isAltOnly = alt && !ctrl && !shift && !super;
-		auto isCtrlOnly = ctrl && !alt && !shift && !super;
-		auto isShiftOnly = shift && !alt && !ctrl && !super;
-
-		io.WantCaptureKeyboard = true;
-		io.WantTextInput = true;
-
-		if (!mReadOnly && isShortcut && ImGui::IsKeyPressed(ImGuiKey_Z))
-			Undo();
-		else if (!mReadOnly && isAltOnly && ImGui::IsKeyPressed(ImGuiKey_Backspace))
-			Undo();
-		else if (!mReadOnly && isShortcut && ImGui::IsKeyPressed(ImGuiKey_Y))
-			Redo();
-		else if (!mReadOnly && isShiftShortcut && ImGui::IsKeyPressed(ImGuiKey_Z))
-			Redo();
-		else if (!alt && !ctrl && !super && ImGui::IsKeyPressed(ImGuiKey_UpArrow))
-			MoveUp(1, shift);
-		else if (!alt && !ctrl && !super && ImGui::IsKeyPressed(ImGuiKey_DownArrow))
-			MoveDown(1, shift);
-		else if ((isOSX ? !ctrl : !alt) && !super && ImGui::IsKeyPressed(ImGuiKey_LeftArrow))
-			MoveLeft(shift, isWordmoveKey);
-		else if ((isOSX ? !ctrl : !alt) && !super && ImGui::IsKeyPressed(ImGuiKey_RightArrow))
-			MoveRight(shift, isWordmoveKey);
-		else if (!alt && !ctrl && !super && ImGui::IsKeyPressed(ImGuiKey_PageUp))
-			MoveUp(mVisibleLineCount - 2, shift);
-		else if (!alt && !ctrl && !super && ImGui::IsKeyPressed(ImGuiKey_PageDown))
-			MoveDown(mVisibleLineCount - 2, shift);
-		else if (ctrl && !alt && !super && ImGui::IsKeyPressed(ImGuiKey_Home))
-			MoveTop(shift);
-		else if (ctrl && !alt && !super && ImGui::IsKeyPressed(ImGuiKey_End))
-			MoveBottom(shift);
-		else if (!alt && !ctrl && !super && ImGui::IsKeyPressed(ImGuiKey_Home))
-			MoveHome(shift);
-		else if (!alt && !ctrl && !super && ImGui::IsKeyPressed(ImGuiKey_End))
-			MoveEnd(shift);
-		else if (!mReadOnly && !alt && !shift && !super && ImGui::IsKeyPressed(ImGuiKey_Delete))
-			Delete(ctrl);
-		else if (!mReadOnly && !alt && !shift && !super && ImGui::IsKeyPressed(ImGuiKey_Backspace))
-			Backspace(ctrl);
-		else if (!mReadOnly && !alt && ctrl && shift && !super && ImGui::IsKeyPressed(ImGuiKey_K))
-			RemoveCurrentLines();
-		else if (!mReadOnly && !alt && ctrl && !shift && !super && ImGui::IsKeyPressed(ImGuiKey_LeftBracket))
-			ChangeCurrentLinesIndentation(false);
-		else if (!mReadOnly && !alt && ctrl && !shift && !super && ImGui::IsKeyPressed(ImGuiKey_RightBracket))
-			ChangeCurrentLinesIndentation(true);
-		else if (!alt && ctrl && shift && !super && ImGui::IsKeyPressed(ImGuiKey_UpArrow))
-			MoveUpCurrentLines();
-		else if (!alt && ctrl && shift && !super && ImGui::IsKeyPressed(ImGuiKey_DownArrow))
-			MoveDownCurrentLines();
-		else if (!mReadOnly && !alt && ctrl && !shift && !super && ImGui::IsKeyPressed(ImGuiKey_Slash))
-			ToggleLineComment();
-		else if (isCtrlOnly && ImGui::IsKeyPressed(ImGuiKey_Insert))
-			Copy();
-		else if (isShortcut && ImGui::IsKeyPressed(ImGuiKey_C))
-			Copy();
-		else if (!mReadOnly && isShiftOnly && ImGui::IsKeyPressed(ImGuiKey_Insert))
-			Paste();
-		else if (!mReadOnly && isShortcut && ImGui::IsKeyPressed(ImGuiKey_V))
-			Paste();
-		else if (isShortcut && ImGui::IsKeyPressed(ImGuiKey_X))
-			Cut();
-		else if (isShiftOnly && ImGui::IsKeyPressed(ImGuiKey_Delete))
-			Cut();
-		else if (isShortcut && ImGui::IsKeyPressed(ImGuiKey_A))
-			SelectAll();
-		else if (isShortcut && ImGui::IsKeyPressed(ImGuiKey_D))
-			AddCursorForNextOccurrence();
-        else if (!mReadOnly && !alt && !ctrl && !shift && !super && (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)))
-			EnterCharacter('\n', false);
-		else if (!mReadOnly && !alt && !ctrl && !super && ImGui::IsKeyPressed(ImGuiKey_Tab))
-			EnterCharacter('\t', shift);
-		if (!mReadOnly && !io.InputQueueCharacters.empty() && !(ctrl && !alt) && !super) // See https://github.com/santaclose/ImGuiColorTextEdit/pull/34
+		for (int i = 0; i < io.InputQueueCharacters.Size; i++)
 		{
-			for (int i = 0; i < io.InputQueueCharacters.Size; i++)
-			{
-				auto c = io.InputQueueCharacters[i];
-				if (c != 0 && (c == '\n' || c >= 32))
-					EnterCharacter(c, shift);
-			}
-			io.InputQueueCharacters.resize(0);
+			auto c = io.InputQueueCharacters[i];
+			if (c != 0 && (c == '\n' || c >= 32))
+				EnterCharacter(c, shift);
 		}
+		io.InputQueueCharacters.resize(0);
 	}
 }
 
@@ -2552,7 +2563,9 @@ void TextEditor::Render(bool aParentIsFocused)
 			}
 			if (cursorCoordsInThisLine.size() > 0)
 			{
-				bool focused = ImGui::IsWindowFocused() || aParentIsFocused;
+				// Cursor only in the focused editor (not every sibling via parent focus).
+				bool focused = ImGui::IsWindowFocused();
+				(void)aParentIsFocused;
 
 				// Render the cursors
 				if (focused)
@@ -2575,8 +2588,6 @@ void TextEditor::Render(bool aParentIsFocused)
 				}
 			}
 
-			// Render colorized text — batch same-color runs so ImGui lays out glyph
-			// spacing naturally instead of one fixed-width cell per character.
 			static std::string glyphBuffer;
 			int charIndex = GetCharacterIndexL({ lineNo, segStartCol });
 			int column = segStartCol;
@@ -2621,18 +2632,16 @@ void TextEditor::Render(bool aParentIsFocused)
 					}
 					MoveCharIndexAndColumn(lineNo, charIndex, column);
 				}
-				else if (glyph.mChar == ' ')
+				else if (glyph.mChar == ' ' && mShowWhitespaces && !inComment)
 				{
-					if (mShowWhitespaces && !inComment)
-					{
-						ImVec2 targetGlyphPos = {
-							lineStartScreenPos.x + mTextStart + TextDistanceToLineStart({ lineNo, column }, false) - segOffsetX,
-							lineStartScreenPos.y };
-						const auto s = ImGui::GetFontSize();
-						const auto x = targetGlyphPos.x + spaceSize * 0.5f;
-						const auto y = targetGlyphPos.y + s * 0.5f;
-						drawList->AddCircleFilled(ImVec2(x, y), 1.5f, mPalette[(int)PaletteIndex::ControlCharacter], 4);
-					}
+					// Only split on spaces when visualising whitespace outside comments.
+					ImVec2 targetGlyphPos = {
+						lineStartScreenPos.x + mTextStart + TextDistanceToLineStart({ lineNo, column }, false) - segOffsetX,
+						lineStartScreenPos.y };
+					const auto s = ImGui::GetFontSize();
+					const auto x = targetGlyphPos.x + spaceSize * 0.5f;
+					const auto y = targetGlyphPos.y + s * 0.5f;
+					drawList->AddCircleFilled(ImVec2(x, y), 1.5f, mPalette[(int)PaletteIndex::ControlCharacter], 4);
 					MoveCharIndexAndColumn(lineNo, charIndex, column);
 				}
 				else
@@ -2644,7 +2653,11 @@ void TextEditor::Render(bool aParentIsFocused)
 					while (charIndex < (int)line.size() && column < segEndCol)
 					{
 						auto& g = line[charIndex];
-						if (g.mChar == ' ' || g.mChar == '\t')
+						if (g.mChar == '\t')
+							break;
+						// Keep spaces inside the run so comments keep natural word spacing.
+						if (g.mChar == ' ' && mShowWhitespaces
+							&& !(g.mComment || g.mMultiLineComment))
 							break;
 						if (GetGlyphColor(g) != runColor)
 							break;

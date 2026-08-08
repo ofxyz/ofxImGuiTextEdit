@@ -116,3 +116,9 @@ Desktop.ini
 *.dll
 example_ui/icon.rc
 example_ui/addons.make
+
+.vs/
+
+dll/
+
+addons.lnk
